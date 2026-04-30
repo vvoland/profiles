@@ -441,7 +441,7 @@ func DefaultProfile() *Seccomp {
 				Args: []specs.LinuxSeccompArg{
 					{
 						Index: 0,
-						Value: unix.AF_VSOCK,
+						Value: unix.AF_ALG,
 						Op:    specs.OpNotEqual,
 					},
 				},
