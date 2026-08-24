@@ -4,6 +4,8 @@
 package seccomp
 
 import (
+	"slices"
+
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
 )
@@ -77,23 +79,57 @@ var allowedSocketDomains = []uint64{
 }
 
 func socketSyscalls() []*Syscall {
-	syscalls := make([]*Syscall, 0, len(allowedSocketDomains))
-	for _, domain := range allowedSocketDomains {
-		syscalls = append(syscalls, &Syscall{
-			LinuxSyscall: specs.LinuxSyscall{
-				Names:  []string{"socket"},
-				Action: specs.ActAllow,
-				Args: []specs.LinuxSeccompArg{
-					{
-						Index: 0,
-						Value: domain,
-						Op:    specs.OpEqualTo,
-					},
-				},
-			},
-		})
+	// Keep range detection independent of the declaration order above.
+	slices.Sort(allowedSocketDomains)
+	return socketSyscallsForDomains(allowedSocketDomains)
+}
+
+func socketSyscallsForDomains(domains []uint64) []*Syscall {
+	syscalls := make([]*Syscall, 0, len(domains))
+	// runc treats repeated comparisons for one argument as separate OR rules,
+	// so bounded ranges cannot use both a lower and an upper comparison.
+	// See https://github.com/opencontainers/runc/issues/2735.
+	//
+	// A one-sided range starting at AF_UNIX is safe because AF_UNSPEC is not a
+	// creatable domain. Collapse it only when doing so removes equality rules.
+	rangeEnd := 0
+	if len(domains) > 1 && domains[0] == unix.AF_UNIX && domains[1] == domains[0]+1 {
+		// The first two domains are represented by the range instead of equalities.
+		rangeEnd = 2
+		lastDomain := domains[1]
+		for _, domain := range domains[2:] {
+			// Stop at the first gap so the range does not include a blocked domain.
+			if domain != lastDomain+1 {
+				break
+			}
+			lastDomain = domain
+			rangeEnd++
+		}
+		// OpLessThan is exclusive, so compare with the value after the range.
+		syscalls = append(syscalls, socketSyscall(lastDomain+1, specs.OpLessThan))
+	}
+
+	// Every later run is bounded, so preserve it with one equality per domain.
+	for _, domain := range domains[rangeEnd:] {
+		syscalls = append(syscalls, socketSyscall(domain, specs.OpEqualTo))
 	}
 	return syscalls
+}
+
+func socketSyscall(value uint64, op specs.LinuxSeccompOperator) *Syscall {
+	return &Syscall{
+		LinuxSyscall: specs.LinuxSyscall{
+			Names:  []string{"socket"},
+			Action: specs.ActAllow,
+			Args: []specs.LinuxSeccompArg{
+				{
+					Index: 0,
+					Value: value,
+					Op:    op,
+				},
+			},
+		},
+	}
 }
 
 func arches() []Architecture {
